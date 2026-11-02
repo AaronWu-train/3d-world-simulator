@@ -1,0 +1,19 @@
+name: 3dws
+channels:
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - cuda-toolkit=12.8
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.11.0
+      - numpy==2.2.6
+      - h5py==3.16.0
+      - opencv-python-headless==5.0.0.93
+      - einops==0.8.2
+      - lpips==0.1.4
+      - gsplat==1.5.3
+      - scipy==1.15.3
+      - spconv-cu126==2.3.8

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pth
+*.h5
+*.hdf5
+*.npz
+data/
+runs/
