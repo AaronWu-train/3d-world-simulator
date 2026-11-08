@@ -67,8 +67,12 @@ class Frames:
             h, w = rgb.shape[:2]
             obj = bits(g["obj_mask"][frame], h, w) if "obj_mask" in g else None
             valid = bits(g["valid_mask"][frame], h, w) if "valid_mask" in g else np.ones((h, w), bool)
-            with h5py.File(self.side(fi, self.gripper_dir) / f"episode_{ep}.h5", "r") as side:
-                gripper = bits(side[f"camera_{c}"]["gripper_mask"][frame], h, w)
+            if f.attrs.get("semantic_supervision", "") == "none":
+                # Missing labels are explicitly declared by the RGB-only converter.
+                gripper = np.zeros((h, w), bool)
+            else:
+                with h5py.File(self.side(fi, self.gripper_dir) / f"episode_{ep}.h5", "r") as side:
+                    gripper = bits(side[f"camera_{c}"]["gripper_mask"][frame], h, w)
             box = self.side(fi, self.box_dir) / f"episode_{ep}_camera_{c}.h5"
             if box.exists():
                 with h5py.File(box, "r") as side:
@@ -114,6 +118,15 @@ class Frames:
 
     def read_depth(self, fi, frame):
         f, cams = (self.file(fi), [])
+        if f.attrs.get("depth_semantics", "") == "monocular_relative_estimate":
+            for c in [int(x) for x in f.attrs["cam_ids"]]:
+                cams.append(dict(
+                    K=f[f"cam/camera_{c}/K_ir"][frame].astype(np.float32),
+                    viewmat=np.linalg.inv(f[f"cam/camera_{c}/E_cam2world"][frame].astype(np.float32)),
+                    cid=c,
+                    estimated_depth=f[f"img/camera_{c}/depth"][frame].astype(np.float32),
+                ))
+            return cams
         if fi not in self.disp:
             src = str(f.attrs.get("src_episode", os.path.basename(self.files[fi])))
             self.disp[fi] = h5py.File(str(self.side(fi, self.disp_dir) / ("disp_" + src)), "r")
@@ -138,9 +151,13 @@ class Frames:
     def depth(self, fi, frame, max_depth=3.0, lrc=8.0):
         out, dev = ([], self.device)
         for c in self.depth_cache((fi, frame)):
-            disp = torch.from_numpy(np.ascontiguousarray(c["disp"])).to(dev).float()
-            d = float(c["K"][0, 0]) * c["baseline"] / disp.clamp(min=1e-06)
-            d[(disp <= 0.5) | (d > max_depth)] = 0.0
+            if "estimated_depth" in c:
+                d = torch.from_numpy(c["estimated_depth"].copy()).to(dev).float()
+                d[~torch.isfinite(d) | (d <= 0) | (d > max_depth)] = 0.0
+            else:
+                disp = torch.from_numpy(np.ascontiguousarray(c["disp"])).to(dev).float()
+                d = float(c["K"][0, 0]) * c["baseline"] / disp.clamp(min=1e-06)
+                d[(disp <= 0.5) | (d > max_depth)] = 0.0
             if "disp_r" in c:
                 dr = torch.from_numpy(np.ascontiguousarray(c["disp_r"])).to(dev).float()
                 W = disp.shape[1]

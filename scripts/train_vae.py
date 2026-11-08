@@ -134,7 +134,7 @@ def render_losses(m, fg, rcams, dcams):
     if dcams:
         viol = free_space_violators(fg["xyz"].detach().float(), dcams, 0.03)
         fg["rgb"] = torch.where(viol[:, None], fg["rgb"].detach(), fg["rgb"])
-    bg = m.bank.gaussians()
+    bg = m.bank.gaussians() if len(m.bank.means) else None
     l1, lp, ssim, _, _ = render_round_loss(
         fg,
         rcams,
@@ -207,7 +207,13 @@ def step(m, batch, train, seed_active, frames, epoch, chamfer, chamfer_rgb, hold
     object_grids = rasterize_object_voxel_masks_multi(
         xyz_world, obj.bool(), m.bbox_min, m.bbox_extent, [(s[2], s[1], s[0]) for s in model.grid_shapes]
     )
-    labels = load_frame(Path(root) / "robot_label_cache", ep, frame, model.grid_shapes, bmin, bmax, device)
+    if m.semantic_supervision:
+        labels = load_frame(Path(root) / "robot_label_cache", ep, frame, model.grid_shapes, bmin, bmax, device)
+    else:
+        # Unlabelled monocular reconstructions: empty regions select the generic
+        # scene branch, but MUST NOT become negative semantic training labels.
+        labels = {kind: [torch.zeros_like(o, dtype=torch.bool) for o in occ_targets]
+                  for kind in ("robot", "gripper")}
     gripper_grids = expand_gripper_grids(labels["gripper"], 6)
     robot_core, robot_valid = [], []
     for level, (r, o, occ) in enumerate(zip(labels["robot"], object_grids, occ_targets)):
@@ -229,13 +235,15 @@ def step(m, batch, train, seed_active, frames, epoch, chamfer, chamfer_rgb, hold
         sum(masked_robot_bce(l, c.float().expand(B, -1, -1, -1, -1), v) for l, c, v in zip(robot_logits, robot_core, robot_valid))
         / levels
     )
-    loss = loss + 10.0 * robot_loss
+    if m.semantic_supervision:
+        loss = loss + 10.0 * robot_loss
     cloth = 0.0
     for logit, g in zip(object_logits, object_grids):
         t = g.float().unsqueeze(1) if g.dim() == 4 else g.float()
         pw = ((t.numel() - t.sum()) / t.sum().clamp(min=1.0)).clamp(max=20.0)
         cloth = cloth + F.binary_cross_entropy_with_logits(logit, t, pos_weight=pw.expand_as(logit))
-    loss = loss + 10.0 * cloth / levels
+    if m.semantic_supervision:
+        loss = loss + 10.0 * cloth / levels
     if tac is not None:
         loss = loss + tactile_loss(m, out, tac, train, epoch)
     carve = depth = render = torch.zeros((), device=device)
@@ -247,8 +255,8 @@ def step(m, batch, train, seed_active, frames, epoch, chamfer, chamfer_rgb, hold
                 robot_logits[-1].detach(),
                 object_logits[-1].detach(),
                 cloth_dilate=1,
-                gt_cloth=object_grids[-1] if use_gt else None,
-                gt_robot=robot_core[-1] if use_gt else None,
+                gt_cloth=object_grids[-1] if use_gt or not m.semantic_supervision else None,
+                gt_robot=robot_core[-1] if use_gt or not m.semantic_supervision else None,
             ),
             max_seeds=100000,
         )
@@ -259,7 +267,9 @@ def step(m, batch, train, seed_active, frames, epoch, chamfer, chamfer_rgb, hold
                 m, seeds, seed_cls, r1, r2, xyz_world, rgb, obj, obj_grids, gripper_grids, robot_core[-1], chamfer_rgb
             )
             rcams = frames.render(fi, frame)
-            dcams = frames.depth(fi, frame)
+            # Monocular predictions have no measured free-space guarantee. They
+            # supervise point reconstruction, never stereo carving or depth loss.
+            dcams = [] if m.estimated_depth else frames.depth(fi, frame)
             if train and hold:
                 rcams = [c for c in rcams if c["cid"] not in hold]
                 dcams = [c for c in dcams if c["cid"] not in hold]
@@ -365,9 +375,14 @@ def main():
         add_tactile(model)
         model.to(device)
     bb = tuple(float(v) for i in range(3) for v in (bbox_min[i], bbox_min[i] + bbox_extent[i]))
-    bank = BackgroundGaussians.from_data(
-        train_ds.files, bb, n_near=700000, n_far=300000, max_eps=a.bg_init_eps, near_grid=0.0015, far_grid=0.004
-    ).to(device)
+    if T.get("estimated_depth", False):
+        # All visible pixels belong to the reconstructed scene. There is no
+        # measured never-valid background or calibrated table plane to seed.
+        bank = BackgroundGaussians(np.empty((0, 3), np.float32), np.empty((0, 3), np.float32), np.empty(0, np.float32)).to(device)
+    else:
+        bank = BackgroundGaussians.from_data(
+            train_ds.files, bb, n_near=700000, n_far=300000, max_eps=a.bg_init_eps, near_grid=0.0015, far_grid=0.004
+        ).to(device)
     bank.max_scale = 0.2
     optimizer = torch.optim.AdamW(list(model.parameters()) + list(head.parameters()), lr=a.lr, weight_decay=0.0001)
     optimizer.add_param_group(dict(params=list(bank.parameters()), lr=0.002, weight_decay=0.0))
@@ -405,6 +420,8 @@ def main():
         pos_mean=pos_mean,
         pos_std=pos_std,
         tactile=T["tactile"],
+        semantic_supervision=T.get("semantic_supervision", True),
+        estimated_depth=T.get("estimated_depth", False),
         bbox_min=torch.as_tensor(bbox_min, device=device),
         bbox_extent=torch.as_tensor(bbox_extent, device=device),
     )
@@ -430,7 +447,9 @@ def main():
             best_val_loss=best,
             pos_mean=pos_mean,
             pos_std=pos_std,
-            args=dict(grid=T["grid"], x_range=T["x_range"], y_range=T["y_range"], z_range=T["z_range"]),
+            args=dict(grid=T["grid"], x_range=T["x_range"], y_range=T["y_range"], z_range=T["z_range"],
+                      semantic_supervision=T.get("semantic_supervision", True),
+                      estimated_depth=T.get("estimated_depth", False), task=a.task),
         )
         torch.save(ck, out / "checkpoints" / "latest.pth")
         if val < best:

@@ -1,4 +1,15 @@
 TASKS = {
+    "amber_cloth_estimated": dict(
+        datasets=["amber_cloth_estimated"],
+        grid=(32, 32, 16),
+        x_range=(-1.0, 1.0),
+        y_range=(-1.0, 1.0),
+        z_range=(-1.0, 0.8),
+        wrist_cams=[],
+        tactile=False,
+        semantic_supervision=False,
+        estimated_depth=True,
+    ),
     "cloth": dict(
         datasets=["bimanual_cloth_v3", "bimanual_cloth_policy_eval", "bimanual_cloth_free", "bimanual_cloth_new"],
         grid=(64, 32, 64),

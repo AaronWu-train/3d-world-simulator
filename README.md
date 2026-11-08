@@ -18,6 +18,8 @@ conda activate 3dws
 
 ## Data
 
+For the local Piper cloth demonstrations, see [Amber conversion and training](amber_data/script/README.md). This experimental path uses estimated monocular depth and the supplied camera calibration, with an explicit unlabelled training task.
+
 Put each dataset under one root, for example `data/bimanual_plug_insertion_v3/{train,val}`. The file layout is in [docs/data_format.md](docs/data_format.md).
 
 ## Training

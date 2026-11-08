@@ -107,6 +107,8 @@ def main():
         T = len(frames)
         with h5py.File(ds.files[ei], "r") as f:
             actions = f["action/cartesian_action"][:].astype(np.float32)
+            provenance = {k: f.attrs[k] for k in ("action_semantics", "depth_semantics", "depth_model", "depth_model_revision",
+                                                 "camera_calibration", "fps", "source_dataset", "source_episode", "task") if k in f.attrs}
             K = np.stack([f[f"cam/camera_{c_}/K_ir"][:].astype(np.float32) for c_ in meta["cam_ids"]], 1)
             E = np.stack([f[f"cam/camera_{c_}/E_cam2world"][:].astype(np.float32) for c_ in meta["cam_ids"]], 1)
         tac = np.load(Path(meta["root"]) / "tactile_targets" / f"episode_{meta['ep_id']}.npz") if tactile else None
@@ -133,6 +135,7 @@ def main():
         z = np.stack(zs)
         tmp = f"{path}.tmp"
         with h5py.File(tmp, "w") as g:
+            g.attrs.update(provenance)
             for k, v in compact(z).items():
                 g.create_dataset(k, data=v)
             g.create_dataset("obj_occ", data=np.stack(occ))

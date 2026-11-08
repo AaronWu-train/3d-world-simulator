@@ -1,0 +1,10 @@
+# CPU conversion and preview; training still needs environment.yml and an NVIDIA GPU.
+numpy>=1.24
+h5py>=3.8
+opencv-python-headless>=4.8
+pyarrow>=14
+av>=12
+torch>=2.2
+transformers>=4.41,<5
+safetensors>=0.4
+matplotlib>=3.7
