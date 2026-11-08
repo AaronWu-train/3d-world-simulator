@@ -120,6 +120,55 @@ python amber_data/script/reconstruct_vae.py --all-episodes --video \
 
 MAE 與 PSNR 是整張 RGB 畫面的誤差，會受大量桌面背景影響。請同時看布料輪廓、摺痕、夾爪邊緣和整段影片的穩定性；原視角外觀接近並不能證明其他視角的 3D 幾何正確。
 
+## Dynamics 連續預測影片
+
+用已訓練的 Dynamics，從 **前 8 幀真實 latent** 出發，接著將預測的 latent 放回歷史，繼續預測。每一步使用錄製資料中的動作；未來真實 RGB 與 latent 僅供對照與計算誤差，不會回填到預測歷史。
+
+請使用這次 Dynamics 匯出 latent 時固定的 `runs/amber/dynamics_vae100/vae_fixed.pth` 解碼。直接換用另一版 VAE 可能讓壓縮表示不相容。這些命令由使用者自行在 GPU 終端機執行：
+
+```bash
+conda activate 3dws
+export CUDA_VISIBLE_DEVICES=0
+export CUDA_HOME="$CONDA_PREFIX"
+export CPATH="$CONDA_PREFIX/targets/x86_64-linux/include${CPATH:+:$CPATH}"
+
+# 先錄兩段：給定 8 幀歷史後，連續預測 25 幀（5 秒）
+python amber_data/script/rollout_dynamics.py \
+  --episodes 21 32 --horizon 25 \
+  --out-dir runs/amber/dynamics_rollout
+
+# horizon=0：一直預測到該段錄製資料結束
+python amber_data/script/rollout_dynamics.py \
+  --episodes 21 32 --horizon 0 \
+  --out-dir runs/amber/dynamics_rollout_full
+
+# 全部 9 段驗證資料，亦可指定 --horizon 25 做短一點的評估
+python amber_data/script/rollout_dynamics.py \
+  --all-episodes --horizon 0 \
+  --out-dir runs/amber/dynamics_rollout_all_val
+```
+
+預設讀取 Dynamics 的 `checkpoints/best.pth`、固定的 `vae_fixed.pth`，以及 `runs/amber/dynamics_vae100/latents/val`。可用 `--dynamics-ckpt`、`--vae-ckpt`、`--latent-dir`、`--packed-dir` 指定其他檔案。
+
+- `episode_*_rollout.mp4`：四欄依序為真實 RGB、該影格的 VAE 重建參考、Dynamics 連續預測、預測 RGB 絕對誤差。
+- 影片最前面的歷史影格標示 `OBSERVED HISTORY`，從後面第一個 `rollout` 才開始計算預測誤差。
+- `episode_*_overview.png`、`episode_*_step_*.png`：預測初期、中段與末段對照。
+- `episode_*_worst.png`：本次預測的較差影格。
+- `episode_*_predicted_latents.npz`：觀測歷史與後續預測的 latent，並記錄影格編號。
+- `report.json`、`evaluation.md`：checkpoint 雜湊、逐幀 RGB 誤差、latent MSE、VAE 參考重建誤差，以及空場景預測次數。摘要只計算真正的預測影格，排除觀測歷史。
+
+在目前 5 FPS、每段 75 幀的資料中，`--horizon 25` 會輸出 8 幀觀測加 25 幀預測（共 6.6 秒）；`--horizon 0` 則是 8 幀觀測加 67 幀預測（共 15 秒）。`--start-frame 30 --horizon 25` 可改從中段取歷史，檢查後續抓取附近的預測。
+
+目前訓練排程最後一階段只連續預測 4 步，長時間 rollout 是額外的壓力測試，可能逐漸偏移或塌縮。若預測為空場景，工具會顯示黑畫面並計數，不會偷偷重設成真實場景。這個工具使用與訓練驗證相同的單步推論及噪聲條件，沒有額外的去噪迭代，也不會重新正規化預測 latent。
+
+工具會檢查 latent 的網格、正規化、動作與相機校正是否匹配。舊版 latent 檔沒有保存 VAE checkpoint hash，因此仍需自行確保指定的是原本匯出時使用的固定 VAE。
+
+CPU 測試（不啟動 GPU 錄影）：
+
+```bash
+python -m unittest discover -s amber_data/script/tests -p test_dynamics_rollout.py
+```
+
 ## 重跑轉換與驗證
 
 轉換可在 CPU 上執行。額外相依套件列在 `amber_data/script/requirements-convert.txt`。本次使用既有的 `/tmp2/amberho/piper_lerobot/.venv/bin/python`，沒有修改該環境。以下命令都從專案根目錄執行。

@@ -122,6 +122,14 @@ class Reconstructor:
         rgb = sample["rgb"][None].to(self.device)
         mean, _ = self.model.encode(xyz, rgb, pos_mean=self.pm, pos_std=self.ps)
         z = normalize_latent(mean, self.model.latent_split)
+        return self.decode_latent(z, cam)
+
+    @torch.inference_mode()
+    def decode_latent(self, z, cam, *, allow_empty=False):
+        """Render a latent directly, including autoregressive Dynamics outputs."""
+        if z.ndim != 5 or z.shape[0] != 1 or not bool(torch.isfinite(z).all()):
+            raise ValueError("Expected one finite latent shaped (1, C, D, H, W)")
+        z = z.to(device=self.device, dtype=torch.float32)
         # Decode from z alone; do not pass ground-truth occupancy or labels.
         out = self.model.decode(z, use_gt_mask=False)
         finest = len(self.model.grid_shapes)-1
@@ -132,7 +140,13 @@ class Reconstructor:
         # Unlike the training cap, this preview uses every predicted occupied cell.
         seeds, classes = select_class_seeds(masks)
         if len(seeds) == 0:
-            raise RuntimeError("Decoder predicted no occupied cells")
+            if not allow_empty:
+                raise RuntimeError("Decoder predicted no occupied cells")
+            # A collapsed prediction must remain visible as a black frame in a
+            # rollout video, rather than silently resetting to ground truth.
+            empty_g = {k: z.new_empty((0, *shape)) for k, shape in
+                       dict(xyz=(3,), scale=(3,), opacity=(), rgb=(3,), quat=(4,)).items()}
+            return np.zeros((cam["H"], cam["W"], 3), np.float32), np.zeros((cam["H"], cam["W"]), np.float32), empty_g
         model = self.model
         vs = (model.bounds_max_world-model.bounds_min_world)/torch.tensor(model.grid_shapes[-1], device=self.device)
         pieces = []
