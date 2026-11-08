@@ -85,6 +85,41 @@ python scripts/train_dynamics.py \
 
 輸出間隔為 0.2 秒，所以 `--n-history 8` 涵蓋約 1.6 秒，與原始 20 FPS 的時間範圍不同。folding/unfolding 的 task 屬性供追蹤來源，目前 dynamics 沒有文字任務條件輸入，學習的是觀測與動作對未來狀態的影響。
 
+## 檢查訓練好的 VAE 重建
+
+在可見 GPU 的 `3dws` 環境執行。若使用 Conda 的 CUDA toolkit，先補齊標頭搜尋路徑，避免 gsplat 編譯找不到 `cuda_runtime.h`：
+
+```bash
+conda activate 3dws
+export CUDA_HOME="$CONDA_PREFIX"
+export CPATH="$CONDA_PREFIX/targets/x86_64-linux/include${CPATH:+:$CPATH}"
+
+# 驗證集：episode 21 是 folding，32 是 unfolding
+# 預設各重建第一張、中間、最後一張
+python amber_data/script/reconstruct_vae.py --episodes 21 32
+
+# 重建兩段完整示範，另輸出 H.264 對照影片（需要 ffmpeg）
+python amber_data/script/reconstruct_vae.py --episodes 21 32 --video
+
+# 完整驗證集：9 段、675 張影格
+python amber_data/script/reconstruct_vae.py --all-episodes --video \
+  --out-dir runs/amber/reconstruction_all_val
+```
+
+預設讀取 `runs/amber/vae/checkpoints/best.pth`、`data/amber_cloth_estimated/val`，輸出至 `runs/amber/reconstruction/`。可用 `--vae-ckpt`、`--packed-dir`、`--out-dir` 更換路徑；`--frames 0 20 40` 可指定影格。
+
+- `overview.png`：各影格的原始 RGB／VAE 重建／RGB 絕對誤差。誤差圖固定使用 0–1 尺度，沒有逐張拉高對比。
+- `episode_*_frame_*.png`：各影格的對照圖。
+- `episode_*_frame_*.ply`：重建 Gaussian 中心的彩色點雲（最多約 50,000 點），供一般點雲工具檢視；不包含完整 Gaussian 橢球參數。
+- `episode_*_comparison.mp4`：使用 `--video` 時輸出的完整對照影片。
+- `report.json`：checkpoint hash、訓練 epoch、所選影格，以及 RGB MAE、PSNR 與透明度摘要。影片模式計算所有影格，快照模式只計算所選影格。
+- `evaluation.md`：逐段平均誤差、最低 PSNR 及對應時間，連結每段影片和較差影格。
+- `episode_*_worst.png`、`worst_frames_overview.png`：各段 PSNR 最低的影格。這是按影像誤差選出，不代表有真實的抓取／接觸標籤。
+
+工具使用已訓練的編碼器、解碼器和粒子 head；不更新權重，解碼時不提供真實占用網格，也不提供物體標籤。這是在重建**已看到的當前影格**，未使用動作預測未來。
+
+MAE 與 PSNR 是整張 RGB 畫面的誤差，會受大量桌面背景影響。請同時看布料輪廓、摺痕、夾爪邊緣和整段影片的穩定性；原視角外觀接近並不能證明其他視角的 3D 幾何正確。
+
 ## 重跑轉換與驗證
 
 轉換可在 CPU 上執行。額外相依套件列在 `amber_data/script/requirements-convert.txt`。本次使用既有的 `/tmp2/amberho/piper_lerobot/.venv/bin/python`，沒有修改該環境。以下命令都從專案根目錄執行。
